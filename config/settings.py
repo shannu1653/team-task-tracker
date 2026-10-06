@@ -42,6 +42,7 @@ INSTALLED_APPS = [
 
     # Third-party apps
     "rest_framework",
+    "drf_spectacular",
 
     # Local apps
     "accounts",
@@ -146,6 +147,13 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Team Task Tracker API",
+    "DESCRIPTION": "Production-minded REST API for managing projects and tasks.",
+    "VERSION": "1.0.0",
 }
 
 SIMPLE_JWT = {
