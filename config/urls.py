@@ -1,19 +1,9 @@
 """
 URL configuration for config project.
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+The `urlpatterns` list routes URLs to views.
 """
+
 from django.contrib import admin
 from django.urls import include, path
 
@@ -24,21 +14,39 @@ from drf_spectacular.views import (
 
 
 urlpatterns = [
+    # Admin
     path("admin/", admin.site.urls),
 
-    # API routes
-    path("auth/", include("accounts.urls")),
+    # Authentication APIs
+    path(
+        "auth/",
+        include("accounts.urls"),
+    ),
 
-    path("projects/", include("projects.urls")),
+    # Project APIs
+    path(
+        "projects/",
+        include("projects.urls"),
+    ),
+
+    # Task APIs
+    path(
+        "",
+        include("tasks.urls"),
+    ),
 
     # OpenAPI schema
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path(
+        "api/schema/",
+        SpectacularAPIView.as_view(),
+        name="schema",
+    ),
 
     # Swagger UI
     path(
         "api/docs/",
         SpectacularSwaggerView.as_view(
-            url_name="schema"
+            url_name="schema",
         ),
         name="swagger-ui",
     ),
