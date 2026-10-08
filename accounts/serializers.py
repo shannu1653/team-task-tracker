@@ -1,6 +1,6 @@
 from django.contrib.auth import authenticate
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import User
 
@@ -32,7 +32,14 @@ class RegisterSerializer(serializers.ModelSerializer):
     def validate_email(self, value):
         value = value.strip().lower()
 
-        if User.objects.filter(email__iexact=value).exists():
+        if not value:
+            raise serializers.ValidationError(
+                "Email cannot be blank."
+            )
+
+        if User.objects.filter(
+            email__iexact=value
+        ).exists():
             raise serializers.ValidationError(
                 "A user with this email already exists."
             )
@@ -46,12 +53,34 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data["password"],
         )
 
-class LoginSerializer(TokenObtainPairSerializer):
-    username_field = "email"
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(
+        write_only=True,
+    )
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Email is required."
+            )
+
+        return value
+
+    def validate_password(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                "Password is required."
+            )
+
+        return value
 
     def validate(self, attrs):
-        email = attrs.get("email", "").strip().lower()
-        password = attrs.get("password")
+        email = attrs["email"]
+        password = attrs["password"]
 
         user = authenticate(
             request=self.context.get("request"),
@@ -79,19 +108,21 @@ class LoginSerializer(TokenObtainPairSerializer):
                 }
             )
 
-        self.user = user
+        refresh = RefreshToken.for_user(user)
 
-        data = super().validate(
-            {
-                "email": email,
-                "password": password,
-            }
-        )
-
-        data["user"] = {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+            },
         }
 
-        return data
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField(
+        required=True,
+        help_text="Refresh token received during login.",
+    )

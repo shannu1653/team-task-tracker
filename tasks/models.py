@@ -19,9 +19,13 @@ class Task(models.Model):
         related_name="tasks",
     )
 
-    title = models.CharField(max_length=200)
+    title = models.CharField(
+        max_length=200,
+    )
 
-    description = models.TextField(blank=True)
+    description = models.TextField(
+        blank=True,
+    )
 
     priority = models.CharField(
         max_length=10,
@@ -54,9 +58,13 @@ class Task(models.Model):
         related_name="created_tasks",
     )
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
 
-    updated_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     completed_at = models.DateTimeField(
         null=True,
@@ -65,6 +73,7 @@ class Task(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
         indexes = [
             models.Index(
                 fields=["project", "status"],
@@ -77,6 +86,18 @@ class Task(models.Model):
             models.Index(
                 fields=["project", "due_date"],
                 name="task_project_due_date_idx",
+            ),
+            models.Index(
+                fields=["project", "assignee"],
+                name="task_project_assignee_idx",
+            ),
+            models.Index(
+                fields=["project", "created_at"],
+                name="task_project_created_idx",
+            ),
+            models.Index(
+                fields=["created_by"],
+                name="task_created_by_idx",
             ),
         ]
 

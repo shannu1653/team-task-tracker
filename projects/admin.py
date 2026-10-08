@@ -23,6 +23,15 @@ class ProjectAdmin(admin.ModelAdmin):
         "updated_at",
     )
 
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+    )
+
+    autocomplete_fields = (
+        "owner",
+    )
+
 
 @admin.register(ProjectMembership)
 class ProjectMembershipAdmin(admin.ModelAdmin):
@@ -40,4 +49,13 @@ class ProjectMembershipAdmin(admin.ModelAdmin):
 
     list_filter = (
         "joined_at",
+    )
+
+    readonly_fields = (
+        "joined_at",
+    )
+
+    autocomplete_fields = (
+        "project",
+        "user",
     )

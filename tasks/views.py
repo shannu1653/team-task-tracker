@@ -1,13 +1,16 @@
+from django.db import transaction
 from django.utils.dateparse import parse_datetime
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
-from rest_framework.pagination import PageNumberPagination
+from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from projects.models import Project, ProjectMembership
+from audit.models import AuditLog
+from audit.services import create_audit_log
+
+from projects.models import Project
 
 from .models import Task
 from .serializers import (
@@ -17,53 +20,99 @@ from .serializers import (
 )
 
 
-class TaskPagination(PageNumberPagination):
+class TaskPagination:
     page_size = 10
-    page_size_query_param = "page_size"
     max_page_size = 50
+
+    def paginate_queryset(self, queryset, request):
+        try:
+            page = int(
+                request.query_params.get(
+                    "page",
+                    1,
+                )
+            )
+
+            page_size = int(
+                request.query_params.get(
+                    "page_size",
+                    self.page_size,
+                )
+            )
+
+        except (TypeError, ValueError):
+            raise serializers.ValidationError(
+                {
+                    "page": "Page must be a valid integer.",
+                    "page_size": (
+                        "Page size must be a valid integer."
+                    ),
+                }
+            )
+
+        if page < 1:
+            raise serializers.ValidationError(
+                {
+                    "page": (
+                        "Page must be greater than 0."
+                    )
+                }
+            )
+
+        if page_size < 1:
+            raise serializers.ValidationError(
+                {
+                    "page_size": (
+                        "Page size must be greater than 0."
+                    )
+                }
+            )
+
+        page_size = min(
+            page_size,
+            self.max_page_size,
+        )
+
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        total = queryset.count()
+
+        return {
+            "results": queryset[start:end],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (
+                (total + page_size - 1) // page_size
+                if total
+                else 0
+            ),
+        }
 
 
 class ProjectTaskListCreateView(APIView):
     permission_classes = [IsAuthenticated]
-    pagination_class = TaskPagination
 
-    # ---------------------------------------------------------
-    # POST /projects/{project_id}/tasks/
-    # ---------------------------------------------------------
     @extend_schema(
         request=TaskCreateSerializer,
-        responses={201: TaskCreateSerializer},
+        responses={201: TaskListSerializer},
     )
     def post(self, request, project_id):
         project = Project.objects.filter(
-            id=project_id
+            id=project_id,
+            memberships__user=request.user,
         ).first()
 
-        if project is None:
+        if not project:
             return Response(
                 {
                     "error": {
-                        "code": "PROJECT_NOT_FOUND",
+                        "code": "NOT_FOUND",
                         "message": "Project not found.",
                     }
                 },
                 status=status.HTTP_404_NOT_FOUND,
-            )
-
-        is_member = ProjectMembership.objects.filter(
-            project=project,
-            user=request.user,
-        ).exists()
-
-        if not is_member:
-            return Response(
-                {
-                    "error": {
-                        "code": "FORBIDDEN",
-                        "message": "You are not a member of this project.",
-                    }
-                },
-                status=status.HTTP_403_FORBIDDEN,
             )
 
         serializer = TaskCreateSerializer(
@@ -74,160 +123,150 @@ class ProjectTaskListCreateView(APIView):
             },
         )
 
-        if serializer.is_valid():
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        with transaction.atomic():
             task = serializer.save()
 
-            return Response(
-                TaskCreateSerializer(task).data,
-                status=status.HTTP_201_CREATED,
+            create_audit_log(
+                user=request.user,
+                action=AuditLog.Action.TASK_CREATED,
+                project=project,
+                task=task,
+                details={
+                    "task_id": task.id,
+                    "title": task.title,
+                    "status": task.status,
+                    "priority": task.priority,
+                },
             )
 
         return Response(
-            {
-                "error": {
-                    "code": "VALIDATION_ERROR",
-                    "message": "Invalid task data.",
-                    "details": serializer.errors,
-                }
-            },
-            status=status.HTTP_400_BAD_REQUEST,
+            TaskListSerializer(task).data,
+            status=status.HTTP_201_CREATED,
         )
 
-    # ---------------------------------------------------------
-    # GET /projects/{project_id}/tasks/
-    # ---------------------------------------------------------
     @extend_schema(
         responses=TaskListSerializer(many=True),
     )
     def get(self, request, project_id):
         project = Project.objects.filter(
-            id=project_id
+            id=project_id,
+            memberships__user=request.user,
         ).first()
 
-        if project is None:
+        if not project:
             return Response(
                 {
                     "error": {
-                        "code": "PROJECT_NOT_FOUND",
+                        "code": "NOT_FOUND",
                         "message": "Project not found.",
                     }
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        is_member = ProjectMembership.objects.filter(
-            project=project,
-            user=request.user,
-        ).exists()
-
-        if not is_member:
-            return Response(
-                {
-                    "error": {
-                        "code": "FORBIDDEN",
-                        "message": "You are not a member of this project.",
-                    }
-                },
-                status=status.HTTP_403_FORBIDDEN,
+        queryset = (
+            Task.objects.filter(
+                project=project
             )
-
-        tasks = (
-            Task.objects
-            .filter(project=project)
             .select_related(
-                "assignee",
                 "created_by",
+                "assignee",
+                "project",
             )
         )
 
-        # -----------------------------------------------------
-        # Filter: status
-        # -----------------------------------------------------
-        status_filter = request.query_params.get("status")
+        # ----------------------------------------------------
+        # FILTERS
+        # ----------------------------------------------------
 
+        status_filter = request.query_params.get(
+            "status"
+        )
+
+        priority_filter = request.query_params.get(
+            "priority"
+        )
+
+        assignee_filter = request.query_params.get(
+            "assignee"
+        )
+
+        due_from = request.query_params.get(
+            "due_from"
+        )
+
+        due_to = request.query_params.get(
+            "due_to"
+        )
+
+        # Status filter
         if status_filter:
-            if status_filter not in {
-                Task.Status.TODO,
-                Task.Status.IN_PROGRESS,
-                Task.Status.DONE,
-            }:
+            if status_filter not in Task.Status.values:
                 return Response(
                     {
                         "error": {
                             "code": "VALIDATION_ERROR",
-                            "message": (
-                                "status must be TODO, "
-                                "IN_PROGRESS, or DONE."
-                            ),
+                            "message": "Invalid status.",
                         }
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            tasks = tasks.filter(
+            queryset = queryset.filter(
                 status=status_filter
             )
 
-        # -----------------------------------------------------
-        # Filter: priority
-        # -----------------------------------------------------
-        priority_filter = request.query_params.get("priority")
-
+        # Priority filter
         if priority_filter:
-            if priority_filter not in {
-                Task.Priority.LOW,
-                Task.Priority.MEDIUM,
-                Task.Priority.HIGH,
-            }:
+            if priority_filter not in Task.Priority.values:
                 return Response(
                     {
                         "error": {
                             "code": "VALIDATION_ERROR",
-                            "message": (
-                                "priority must be LOW, "
-                                "MEDIUM, or HIGH."
-                            ),
+                            "message": "Invalid priority.",
                         }
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            tasks = tasks.filter(
+            queryset = queryset.filter(
                 priority=priority_filter
             )
 
-        # -----------------------------------------------------
-        # Filter: assignee
-        # -----------------------------------------------------
-        assignee_filter = request.query_params.get("assignee")
-
+        # Assignee filter
         if assignee_filter:
             try:
-                assignee_id = int(assignee_filter)
-            except ValueError:
+                assignee_id = int(
+                    assignee_filter
+                )
+
+            except (TypeError, ValueError):
                 return Response(
                     {
                         "error": {
                             "code": "VALIDATION_ERROR",
                             "message": (
-                                "Assignee must be a valid user ID."
+                                "Assignee must be a valid "
+                                "user ID."
                             ),
                         }
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            tasks = tasks.filter(
+            queryset = queryset.filter(
                 assignee_id=assignee_id
             )
 
-        # -----------------------------------------------------
-        # Filter: due_from
-        # -----------------------------------------------------
-        due_from = request.query_params.get("due_from")
-
+        # Due date from
         if due_from:
-            parsed_due_from = parse_datetime(due_from)
+            parsed_due_from = parse_datetime(
+                due_from
+            )
 
             if parsed_due_from is None:
                 return Response(
@@ -243,17 +282,15 @@ class ProjectTaskListCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            tasks = tasks.filter(
+            queryset = queryset.filter(
                 due_date__gte=parsed_due_from
             )
 
-        # -----------------------------------------------------
-        # Filter: due_to
-        # -----------------------------------------------------
-        due_to = request.query_params.get("due_to")
-
+        # Due date to
         if due_to:
-            parsed_due_to = parse_datetime(due_to)
+            parsed_due_to = parse_datetime(
+                due_to
+            )
 
             if parsed_due_to is None:
                 return Response(
@@ -269,125 +306,139 @@ class ProjectTaskListCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            tasks = tasks.filter(
+            queryset = queryset.filter(
                 due_date__lte=parsed_due_to
             )
 
-        # -----------------------------------------------------
-        # Sorting
-        # -----------------------------------------------------
-        sort_by = request.query_params.get(
+        # ----------------------------------------------------
+        # SORTING
+        # ----------------------------------------------------
+
+        sort = request.query_params.get(
             "sort",
-            "created_at",
+            "-created_at",
         )
 
-        sort_order = request.query_params.get(
-            "order",
-            "desc",
-        )
-
-        allowed_sort_fields = {
+        allowed_sorts = {
             "created_at": "created_at",
+            "-created_at": "-created_at",
             "due_date": "due_date",
+            "-due_date": "-due_date",
         }
 
-        if sort_by not in allowed_sort_fields:
+        if sort not in allowed_sorts:
             return Response(
                 {
                     "error": {
                         "code": "VALIDATION_ERROR",
-                        "message": (
-                            "sort must be created_at or due_date."
-                        ),
+                        "message": "Invalid sort field.",
                     }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if sort_order not in {"asc", "desc"}:
-            return Response(
-                {
-                    "error": {
-                        "code": "VALIDATION_ERROR",
-                        "message": (
-                            "order must be asc or desc."
-                        ),
-                    }
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        queryset = queryset.order_by(
+            allowed_sorts[sort]
+        )
 
-        ordering = allowed_sort_fields[sort_by]
+        # ----------------------------------------------------
+        # PAGINATION
+        # ----------------------------------------------------
 
-        if sort_order == "desc":
-            ordering = f"-{ordering}"
+        paginator = TaskPagination()
 
-        tasks = tasks.order_by(ordering)
-
-        # -----------------------------------------------------
-        # Pagination
-        # -----------------------------------------------------
-        paginator = self.pagination_class()
-
-        page = paginator.paginate_queryset(
-            tasks,
+        paginated = paginator.paginate_queryset(
+            queryset,
             request,
-            view=self,
         )
 
         serializer = TaskListSerializer(
-            page,
+            paginated["results"],
             many=True,
         )
 
-        return paginator.get_paginated_response(
-            serializer.data
+        return Response(
+            {
+                "page": paginated["page"],
+                "page_size": paginated["page_size"],
+                "total": paginated["total"],
+                "total_pages": paginated["total_pages"],
+                "results": serializer.data,
+            }
         )
 
 
 class TaskDetailView(APIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = TaskListSerializer
 
-    # ---------------------------------------------------------
-    # PATCH /tasks/{task_id}/
-    # ---------------------------------------------------------
-    @extend_schema(
-        request=TaskUpdateSerializer,
-        responses={200: TaskListSerializer},
-    )
-    def patch(self, request, task_id):
-        task = (
-            Task.objects
-            .select_related("project")
-            .filter(id=task_id)
+    def get_task(self, request, task_id):
+        return (
+            Task.objects.filter(
+                id=task_id,
+                project__memberships__user=request.user,
+            )
+            .select_related(
+                "project",
+                "created_by",
+                "assignee",
+            )
             .first()
         )
 
-        if task is None:
+    # --------------------------------------------------------
+    # GET TASK
+    # --------------------------------------------------------
+
+    @extend_schema(
+        responses=TaskListSerializer,
+    )
+    def get(self, request, task_id):
+        task = self.get_task(
+            request,
+            task_id,
+        )
+
+        if not task:
             return Response(
                 {
                     "error": {
-                        "code": "TASK_NOT_FOUND",
+                        "code": "NOT_FOUND",
                         "message": "Task not found.",
                     }
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        is_member = ProjectMembership.objects.filter(
-            project=task.project,
-            user=request.user,
-        ).exists()
+        serializer = TaskListSerializer(task)
 
-        if not is_member:
+        return Response(
+            serializer.data
+        )
+
+    # --------------------------------------------------------
+    # UPDATE TASK
+    # --------------------------------------------------------
+
+    @extend_schema(
+        request=TaskUpdateSerializer,
+        responses=TaskListSerializer,
+    )
+    def patch(self, request, task_id):
+        task = self.get_task(
+            request,
+            task_id,
+        )
+
+        if not task:
             return Response(
                 {
                     "error": {
-                        "code": "FORBIDDEN",
-                        "message": "You are not a member of this project.",
+                        "code": "NOT_FOUND",
+                        "message": "Task not found.",
                     }
                 },
-                status=status.HTTP_403_FORBIDDEN,
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         serializer = TaskUpdateSerializer(
@@ -400,77 +451,93 @@ class TaskDetailView(APIView):
             },
         )
 
-        if serializer.is_valid():
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        with transaction.atomic():
             updated_task = serializer.save()
 
-            return Response(
-                TaskListSerializer(updated_task).data,
-                status=status.HTTP_200_OK,
+            create_audit_log(
+                user=request.user,
+                action=AuditLog.Action.TASK_UPDATED,
+                project=updated_task.project,
+                task=updated_task,
+                details={
+                    "task_id": updated_task.id,
+                    "changed_fields": list(
+                        request.data.keys()
+                    ),
+                    "status": updated_task.status,
+                    "priority": updated_task.priority,
+                },
             )
 
         return Response(
-            {
-                "error": {
-                    "code": "VALIDATION_ERROR",
-                    "message": "Invalid task data.",
-                    "details": serializer.errors,
-                }
-            },
-            status=status.HTTP_400_BAD_REQUEST,
+            TaskListSerializer(
+                updated_task
+            ).data
         )
 
-    # ---------------------------------------------------------
-    # DELETE /tasks/{task_id}/
-    # ---------------------------------------------------------
-    @extend_schema(
-        responses={204: None},
-    )
+    # --------------------------------------------------------
+    # DELETE TASK
+    # --------------------------------------------------------
+
     def delete(self, request, task_id):
-        task = (
-            Task.objects
-            .select_related(
-                "project",
-                "project__owner",
-                "created_by",
-            )
-            .filter(id=task_id)
-            .first()
+        task = self.get_task(
+            request,
+            task_id,
         )
 
-        if task is None:
+        if not task:
             return Response(
                 {
                     "error": {
-                        "code": "TASK_NOT_FOUND",
+                        "code": "NOT_FOUND",
                         "message": "Task not found.",
                     }
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        is_owner = (
-            task.project.owner_id == request.user.id
-        )
-
-        is_creator = (
-            task.created_by_id == request.user.id
-        )
-
-        if not is_owner and not is_creator:
+        # Only task creator or project owner
+        # can delete the task.
+        if (
+            task.created_by_id != request.user.id
+            and task.project.owner_id != request.user.id
+        ):
             return Response(
                 {
                     "error": {
                         "code": "FORBIDDEN",
                         "message": (
-                            "Only the project owner or task creator "
-                            "can delete this task."
+                            "Only the task creator or "
+                            "project owner can delete "
+                            "the task."
                         ),
                     }
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        task.delete()
+        project = task.project
+
+        task_id_value = task.id
+        task_title = task.title
+
+        with transaction.atomic():
+            create_audit_log(
+                user=request.user,
+                action=AuditLog.Action.TASK_DELETED,
+                project=project,
+                task=task,
+                details={
+                    "task_id": task_id_value,
+                    "title": task_title,
+                },
+            )
+
+            task.delete()
 
         return Response(
             status=status.HTTP_204_NO_CONTENT

@@ -1,7 +1,4 @@
 from django.contrib import admin
-
-# Register your models here.
-from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
 from .models import User
@@ -20,16 +17,43 @@ class CustomUserAdmin(UserAdmin):
         "created_at",
     )
 
-    ordering = ("id",)
+    ordering = (
+        "id",
+    )
 
     search_fields = (
         "email",
         "name",
     )
 
+    list_filter = (
+        "is_active",
+        "is_staff",
+        "is_superuser",
+    )
+
+    readonly_fields = (
+        "created_at",
+    )
+
     fieldsets = (
-        (None, {"fields": ("email", "password")}),
-        ("Personal information", {"fields": ("name",)}),
+        (
+            None,
+            {
+                "fields": (
+                    "email",
+                    "password",
+                )
+            },
+        ),
+        (
+            "Personal information",
+            {
+                "fields": (
+                    "name",
+                )
+            },
+        ),
         (
             "Permissions",
             {
@@ -40,13 +64,23 @@ class CustomUserAdmin(UserAdmin):
                 )
             },
         ),
+        (
+            "Important dates",
+            {
+                "fields": (
+                    "created_at",
+                )
+            },
+        ),
     )
 
     add_fieldsets = (
         (
             None,
             {
-                "classes": ("wide",),
+                "classes": (
+                    "wide",
+                ),
                 "fields": (
                     "email",
                     "name",

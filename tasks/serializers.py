@@ -1,7 +1,7 @@
+from django.utils import timezone
 from rest_framework import serializers
 
-from accounts.models import User
-from projects.models import Project, ProjectMembership
+from projects.models import ProjectMembership
 
 from .models import Task
 
@@ -22,7 +22,6 @@ class TaskCreateSerializer(serializers.ModelSerializer):
             "updated_at",
             "completed_at",
         )
-
         read_only_fields = (
             "id",
             "created_by",
@@ -41,35 +40,13 @@ class TaskCreateSerializer(serializers.ModelSerializer):
 
         return value
 
-    def validate_priority(self, value):
-        valid_priorities = {
-            Task.Priority.LOW,
-            Task.Priority.MEDIUM,
-            Task.Priority.HIGH,
-        }
-
-        if value not in valid_priorities:
-            raise serializers.ValidationError(
-                "Priority must be LOW, MEDIUM, or HIGH."
-            )
-
-        return value
-
-    def validate_status(self, value):
-        valid_statuses = {
-            Task.Status.TODO,
-            Task.Status.IN_PROGRESS,
-            Task.Status.DONE,
-        }
-
-        if value not in valid_statuses:
-            raise serializers.ValidationError(
-                "Status must be TODO, IN_PROGRESS, or DONE."
-            )
-
-        return value
+    def validate_description(self, value):
+        return value.strip()
 
     def validate_assignee(self, value):
+        if value is None:
+            return value
+
         project = self.context["project"]
 
         is_member = ProjectMembership.objects.filter(
@@ -79,20 +56,21 @@ class TaskCreateSerializer(serializers.ModelSerializer):
 
         if not is_member:
             raise serializers.ValidationError(
-                "Assignee must be a member of this project."
+                "Assignee must be a member of the project."
             )
 
         return value
 
     def create(self, validated_data):
+        request = self.context["request"]
         project = self.context["project"]
-        user = self.context["request"].user
 
         return Task.objects.create(
             project=project,
-            created_by=user,
+            created_by=request.user,
             **validated_data,
         )
+
 
 class TaskListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(
@@ -123,6 +101,16 @@ class TaskListSerializer(serializers.ModelSerializer):
             "updated_at",
             "completed_at",
         )
+        read_only_fields = (
+            "id",
+            "created_by",
+            "created_by_name",
+            "assignee_name",
+            "created_at",
+            "updated_at",
+            "completed_at",
+        )
+
 
 class TaskUpdateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -146,35 +134,13 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
 
         return value
 
-    def validate_priority(self, value):
-        valid_priorities = {
-            Task.Priority.LOW,
-            Task.Priority.MEDIUM,
-            Task.Priority.HIGH,
-        }
-
-        if value not in valid_priorities:
-            raise serializers.ValidationError(
-                "Priority must be LOW, MEDIUM, or HIGH."
-            )
-
-        return value
-
-    def validate_status(self, value):
-        valid_statuses = {
-            Task.Status.TODO,
-            Task.Status.IN_PROGRESS,
-            Task.Status.DONE,
-        }
-
-        if value not in valid_statuses:
-            raise serializers.ValidationError(
-                "Status must be TODO, IN_PROGRESS, or DONE."
-            )
-
-        return value
+    def validate_description(self, value):
+        return value.strip()
 
     def validate_assignee(self, value):
+        if value is None:
+            return value
+
         project = self.context["project"]
 
         is_member = ProjectMembership.objects.filter(
@@ -184,31 +150,34 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
 
         if not is_member:
             raise serializers.ValidationError(
-                "Assignee must be a member of this project."
+                "Assignee must be a member of the project."
             )
 
         return value
 
     def update(self, instance, validated_data):
         old_status = instance.status
+
         new_status = validated_data.get(
             "status",
             instance.status,
         )
 
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+        for attribute, value in validated_data.items():
+            setattr(
+                instance,
+                attribute,
+                value,
+            )
 
-        # First transition to DONE
+        # First transition to DONE.
         if (
             old_status != Task.Status.DONE
             and new_status == Task.Status.DONE
         ):
-            from django.utils import timezone
-
             instance.completed_at = timezone.now()
 
-        # Reopening a completed task
+        # Reopen a completed task.
         elif (
             old_status == Task.Status.DONE
             and new_status != Task.Status.DONE

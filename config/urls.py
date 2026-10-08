@@ -4,6 +4,8 @@ URL configuration for config project.
 The `urlpatterns` list routes URLs to views.
 """
 
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
@@ -14,35 +16,52 @@ from drf_spectacular.views import (
 
 
 urlpatterns = [
-    # Admin
-    path("admin/", admin.site.urls),
+    # ========================================================
+    # ADMIN
+    # ========================================================
 
-    # Authentication APIs
+    path(
+        "admin/",
+        admin.site.urls,
+    ),
+
+    # ========================================================
+    # AUTHENTICATION APIs
+    # ========================================================
+
     path(
         "auth/",
         include("accounts.urls"),
     ),
 
-    # Project APIs
+    # ========================================================
+    # PROJECT APIs
+    # ========================================================
+
     path(
         "projects/",
         include("projects.urls"),
     ),
 
-    # Task APIs
+    # ========================================================
+    # TASK APIs
+    # ========================================================
+
     path(
         "",
         include("tasks.urls"),
     ),
 
-    # OpenAPI schema
+    # ========================================================
+    # OPENAPI / SWAGGER
+    # ========================================================
+
     path(
         "api/schema/",
         SpectacularAPIView.as_view(),
         name="schema",
     ),
 
-    # Swagger UI
     path(
         "api/docs/",
         SpectacularSwaggerView.as_view(
@@ -51,3 +70,14 @@ urlpatterns = [
         name="swagger-ui",
     ),
 ]
+
+
+# ============================================================
+# DEVELOPMENT MEDIA FILES
+# ============================================================
+
+if settings.DEBUG:
+    urlpatterns += static(
+        settings.MEDIA_URL,
+        document_root=settings.MEDIA_ROOT,
+    )
