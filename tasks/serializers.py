@@ -124,3 +124,97 @@ class TaskListSerializer(serializers.ModelSerializer):
             "completed_at",
         )
 
+class TaskUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Task
+        fields = (
+            "title",
+            "description",
+            "priority",
+            "status",
+            "due_date",
+            "assignee",
+        )
+
+    def validate_title(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Task title cannot be blank."
+            )
+
+        return value
+
+    def validate_priority(self, value):
+        valid_priorities = {
+            Task.Priority.LOW,
+            Task.Priority.MEDIUM,
+            Task.Priority.HIGH,
+        }
+
+        if value not in valid_priorities:
+            raise serializers.ValidationError(
+                "Priority must be LOW, MEDIUM, or HIGH."
+            )
+
+        return value
+
+    def validate_status(self, value):
+        valid_statuses = {
+            Task.Status.TODO,
+            Task.Status.IN_PROGRESS,
+            Task.Status.DONE,
+        }
+
+        if value not in valid_statuses:
+            raise serializers.ValidationError(
+                "Status must be TODO, IN_PROGRESS, or DONE."
+            )
+
+        return value
+
+    def validate_assignee(self, value):
+        project = self.context["project"]
+
+        is_member = ProjectMembership.objects.filter(
+            project=project,
+            user=value,
+        ).exists()
+
+        if not is_member:
+            raise serializers.ValidationError(
+                "Assignee must be a member of this project."
+            )
+
+        return value
+
+    def update(self, instance, validated_data):
+        old_status = instance.status
+        new_status = validated_data.get(
+            "status",
+            instance.status,
+        )
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        # First transition to DONE
+        if (
+            old_status != Task.Status.DONE
+            and new_status == Task.Status.DONE
+        ):
+            from django.utils import timezone
+
+            instance.completed_at = timezone.now()
+
+        # Reopening a completed task
+        elif (
+            old_status == Task.Status.DONE
+            and new_status != Task.Status.DONE
+        ):
+            instance.completed_at = None
+
+        instance.save()
+
+        return instance

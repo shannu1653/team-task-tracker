@@ -13,6 +13,7 @@ from .models import Task
 from .serializers import (
     TaskCreateSerializer,
     TaskListSerializer,
+    TaskUpdateSerializer,
 )
 
 
@@ -59,9 +60,7 @@ class ProjectTaskListCreateView(APIView):
                 {
                     "error": {
                         "code": "FORBIDDEN",
-                        "message": (
-                            "You are not a member of this project."
-                        ),
+                        "message": "You are not a member of this project.",
                     }
                 },
                 status=status.HTTP_403_FORBIDDEN,
@@ -126,9 +125,7 @@ class ProjectTaskListCreateView(APIView):
                 {
                     "error": {
                         "code": "FORBIDDEN",
-                        "message": (
-                            "You are not a member of this project."
-                        ),
+                        "message": "You are not a member of this project.",
                     }
                 },
                 status=status.HTTP_403_FORBIDDEN,
@@ -213,8 +210,7 @@ class ProjectTaskListCreateView(APIView):
                         "error": {
                             "code": "VALIDATION_ERROR",
                             "message": (
-                                "Assignee must be a valid "
-                                "user ID."
+                                "Assignee must be a valid user ID."
                             ),
                         }
                     },
@@ -301,8 +297,7 @@ class ProjectTaskListCreateView(APIView):
                     "error": {
                         "code": "VALIDATION_ERROR",
                         "message": (
-                            "sort must be created_at "
-                            "or due_date."
+                            "sort must be created_at or due_date."
                         ),
                     }
                 },
@@ -347,4 +342,136 @@ class ProjectTaskListCreateView(APIView):
 
         return paginator.get_paginated_response(
             serializer.data
+        )
+
+
+class TaskDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # ---------------------------------------------------------
+    # PATCH /tasks/{task_id}/
+    # ---------------------------------------------------------
+    @extend_schema(
+        request=TaskUpdateSerializer,
+        responses={200: TaskListSerializer},
+    )
+    def patch(self, request, task_id):
+        task = (
+            Task.objects
+            .select_related("project")
+            .filter(id=task_id)
+            .first()
+        )
+
+        if task is None:
+            return Response(
+                {
+                    "error": {
+                        "code": "TASK_NOT_FOUND",
+                        "message": "Task not found.",
+                    }
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        is_member = ProjectMembership.objects.filter(
+            project=task.project,
+            user=request.user,
+        ).exists()
+
+        if not is_member:
+            return Response(
+                {
+                    "error": {
+                        "code": "FORBIDDEN",
+                        "message": "You are not a member of this project.",
+                    }
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = TaskUpdateSerializer(
+            task,
+            data=request.data,
+            partial=True,
+            context={
+                "request": request,
+                "project": task.project,
+            },
+        )
+
+        if serializer.is_valid():
+            updated_task = serializer.save()
+
+            return Response(
+                TaskListSerializer(updated_task).data,
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid task data.",
+                    "details": serializer.errors,
+                }
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ---------------------------------------------------------
+    # DELETE /tasks/{task_id}/
+    # ---------------------------------------------------------
+    @extend_schema(
+        responses={204: None},
+    )
+    def delete(self, request, task_id):
+        task = (
+            Task.objects
+            .select_related(
+                "project",
+                "project__owner",
+                "created_by",
+            )
+            .filter(id=task_id)
+            .first()
+        )
+
+        if task is None:
+            return Response(
+                {
+                    "error": {
+                        "code": "TASK_NOT_FOUND",
+                        "message": "Task not found.",
+                    }
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        is_owner = (
+            task.project.owner_id == request.user.id
+        )
+
+        is_creator = (
+            task.created_by_id == request.user.id
+        )
+
+        if not is_owner and not is_creator:
+            return Response(
+                {
+                    "error": {
+                        "code": "FORBIDDEN",
+                        "message": (
+                            "Only the project owner or task creator "
+                            "can delete this task."
+                        ),
+                    }
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        task.delete()
+
+        return Response(
+            status=status.HTTP_204_NO_CONTENT
         )
